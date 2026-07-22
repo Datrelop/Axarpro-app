@@ -767,9 +767,9 @@ const state = {
   ],
   // Operario
   route: [
-    {id:1, name:'Res. Jardines del Mar', address:'Torre del Mar', time:'09:00', status:'pendiente', plan:'Premium', team:['Manuel R.','Ana G.'], active:true, vecinoCode:'1001', presidentCode:'9001', administradorFincasId:'EMP-007'},
-    {id:2, name:'Urb. Alborada', address:'Vélez-Málaga', time:'11:00', status:'pendiente', plan:'Estándar', team:['Manuel R.'], active:true, vecinoCode:'1002', presidentCode:'9002', administradorFincasId:'EMP-007'},
-    {id:3, name:'Comunidad Vista Axarquía', address:'Rincón de la Victoria', time:'13:00', status:'pendiente', plan:'Básico', team:['Manuel R.'], active:true, vecinoCode:'1003', presidentCode:'9003', administradorFincasId:'EMP-009'},
+    {id:1, name:'Res. Jardines del Mar', address:'Torre del Mar', time:'09:00', status:'pendiente', plan:'Premium', team:['Manuel R.','Ana G.'], active:true, vecinoCode:'1001', presidentCode:'9001', administradorFincasId:'EMP-007', travelMinutes:15},
+    {id:2, name:'Urb. Alborada', address:'Vélez-Málaga', time:'11:00', status:'pendiente', plan:'Estándar', team:['Manuel R.'], active:true, vecinoCode:'1002', presidentCode:'9002', administradorFincasId:'EMP-007', travelMinutes:15},
+    {id:3, name:'Comunidad Vista Axarquía', address:'Rincón de la Victoria', time:'13:00', status:'pendiente', plan:'Básico', team:['Manuel R.'], active:true, vecinoCode:'1003', presidentCode:'9003', administradorFincasId:'EMP-009', travelMinutes:20},
   ],
   activeJob: null, // {routeId, startedAt, elapsed, checklist:{}, photosBefore, photosAfter}
   extraTaskRequests: [],
@@ -1545,6 +1545,7 @@ function sendIncident(){
     photo: state.incidentPhotoData
   };
   state.incidents.unshift(record);
+  if(window.fbWriteIncident) window.fbWriteIncident(record);
   if(status==='pendiente autorización'){
     state.pendingAuthorizations.unshift({id:num, title:record.title, location:record.location, community: currentCommunityName(), date:'hoy', reportedBy:`${nameVal} (${viviendaVal})`});
   }
@@ -1591,6 +1592,7 @@ function decideAuth(id, decision){
   if(inc){
     inc.status = decision==='aprobado' ? 'en curso' : 'pendiente (horario normal)';
     inc.authorizedBy = decision==='aprobado' ? (ROLE_META[state.role]?.label || 'Autorizado') : null;
+    if(window.fbWriteIncident) window.fbWriteIncident(inc);
   }
   showToast(decision==='aprobado' ? 'Actuación urgente aprobada' : 'Se atenderá en horario normal', decision==='aprobado'?'✅':'🕒');
   if(state.role==='administrador'){ render(); } else { go('pendingAuth'); }
@@ -2920,6 +2922,7 @@ screens.planner = () => topbar('Ruta Diaria', 'Ordena las paradas para ahorrar d
     <div class="card" style="background:#E4EBF7;box-shadow:none;">
       <p style="font-size:12px;color:var(--navy);margin:0;">📍 Usa las flechas para ordenar las comunidades según el mejor recorrido geográfico, y ajusta la hora de cada una.</p>
     </div>
+    <button class="btn btn-navy" style="margin-bottom:14px;" onclick="go('weeklyPlan')">📅 Planificación semanal</button>
     <div class="section-label">Cuadrante de hoy</div>
     ${state.route.filter(r=>r.active!==false).map((r,idx,arr)=>`
       <div class="card">
@@ -2940,6 +2943,10 @@ screens.planner = () => topbar('Ruta Diaria', 'Ordena las paradas para ahorrar d
             <div style="display:flex;align-items:center;gap:6px;margin-top:8px;">
               <span style="font-size:12px;color:var(--navy);font-weight:600;">🕐 Hora:</span>
               <input type="time" value="${r.time}" style="padding:4px 8px;font-size:12.5px;width:auto;margin:0;" onchange="updateStopTime(${r.id}, this.value)">
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+              <span style="font-size:12px;color:var(--navy);font-weight:600;">🚗 Desplazamiento hasta aquí:</span>
+              <input type="number" min="0" step="5" value="${r.travelMinutes||0}" style="padding:4px 8px;font-size:12.5px;width:60px;margin:0;" onchange="updateStopTravel(${r.id}, this.value)"> min
             </div>
             <p style="font-size:12.5px;color:var(--navy);margin:8px 0 0;">👥 Equipo: ${(r.team&&r.team.length? r.team.join(', ') : 'sin asignar')} · <span style="color:var(--green-dark);font-weight:700;cursor:pointer;" onclick="toggleRouteTeamEditor(${r.id})">Cambiar</span></p>
             ${state.expandedRouteTeamEditor===r.id? `
@@ -2972,29 +2979,149 @@ function moveRouteStop(id, direction){
   if(window.fbWriteRoute){ window.fbWriteRoute(state.route[realIdxA]); window.fbWriteRoute(state.route[realIdxB]); }
   render();
 }
+function timeToMinutes(t){ const [h,m] = (t||'00:00').split(':').map(Number); return h*60+m; }
+function hasTimeConflict(stopA, stopB){
+  const diff = Math.abs(timeToMinutes(stopA.time) - timeToMinutes(stopB.time));
+  const required = Math.max(stopA.travelMinutes||0, stopB.travelMinutes||0, 1);
+  return diff < required;
+}
+function updateStopTravel(id, minutes){
+  const r = state.route.find(x=>x.id===id);
+  if(!r) return;
+  const val = Math.max(0, parseInt(minutes,10)||0);
+  r.travelMinutes = val;
+  showToast(`Desplazamiento hasta ${r.name}: ${val} min`,'🚗');
+  if(window.fbWriteRoute) window.fbWriteRoute(r);
+  render();
+}
 function updateStopTime(id, newTime){
   const r = state.route.find(x=>x.id===id);
-  if(r){ r.time = newTime; showToast(`Hora actualizada: ${r.name} a las ${newTime}`,'🕐'); if(window.fbWriteRoute) window.fbWriteRoute(r); render(); }
+  if(!r) return;
+  const candidate = {...r, time:newTime};
+  const namesToCheck = new Set(r.team||[]);
+  if(r.schedule){ DAY_KEYS.forEach(day=>(r.schedule[day]||[]).forEach(n=>namesToCheck.add(n))); }
+  for(const name of namesToCheck){
+    const clash = state.route.find(other=>other.id!==id && other.active!==false && hasTimeConflict(candidate, other) && ((other.team||[]).includes(name) || (other.schedule && DAY_KEYS.some(day=>(other.schedule[day]||[]).includes(name)))));
+    if(clash){
+      showToast(`No se puede cambiar la hora: ${name} no llega a tiempo desde/hasta ${clash.name} (${clash.time})`,'⚠️');
+      render();
+      return;
+    }
+  }
+  r.time = newTime;
+  showToast(`Hora actualizada: ${r.name} a las ${newTime}`,'🕐');
+  if(window.fbWriteRoute) window.fbWriteRoute(r);
+  render();
 }
 
 function toggleRouteTeamEditor(id){ state.expandedRouteTeamEditor = state.expandedRouteTeamEditor===id? null : id; render(); }
+function findScheduleConflict(id, name){
+  const r = state.route.find(x=>x.id===id);
+  if(!r) return null;
+  return state.route.find(other=>other.id!==id && other.active!==false && hasTimeConflict(r, other) && (other.team||[]).includes(name)) || null;
+}
 function toggleRouteTeamMember(id, name){
   const r = state.route.find(x=>x.id===id);
   if(!r) return;
   if(!r.team) r.team=[];
   const idx = r.team.indexOf(name);
-  if(idx>=0) r.team.splice(idx,1); else r.team.push(name);
+  if(idx>=0){ r.team.splice(idx,1); render(); return; }
+  const conflict = findScheduleConflict(id, name);
+  if(conflict){
+    showToast(`${name} ya está asignado a ${conflict.name} a las ${conflict.time} — no le da tiempo a llegar`,'⚠️');
+    return;
+  }
+  r.team.push(name);
   render();
 }
 function confirmRouteTeam(id){
   const r = state.route.find(x=>x.id===id);
   if(!r) return;
+  for(const name of (r.team||[])){
+    const conflict = findScheduleConflict(id, name);
+    if(conflict){
+      showToast(`No se puede guardar: ${name} coincide con ${conflict.name} a las ${conflict.time}`,'⚠️');
+      return;
+    }
+  }
   state.expandedRouteTeamEditor = null;
   const teamText = (r.team && r.team.length) ? r.team.join(', ') : 'sin nadie asignado';
   showToast(`Equipo guardado para ${r.name}: ${teamText}`,'✅');
   if(window.fbWriteRoute) window.fbWriteRoute(r);
   render();
 }
+
+const DAY_KEYS = ['lun','mar','mié','jue','vie','sáb','dom'];
+const DAY_LABELS = {lun:'Lunes', mar:'Martes', mié:'Miércoles', jue:'Jueves', vie:'Viernes', sáb:'Sábado', dom:'Domingo'};
+function todayDayKey(){ return DAY_KEYS[(new Date().getDay()+6)%7]; }
+function findWeeklyConflict(id, day, name){
+  const r = state.route.find(x=>x.id===id);
+  if(!r) return null;
+  return state.route.find(other=>other.id!==id && other.active!==false && hasTimeConflict(r, other) && ((other.schedule&&other.schedule[day])||[]).includes(name)) || null;
+}
+function toggleWeeklyDay(id, day){
+  const r = state.route.find(x=>x.id===id);
+  if(!r) return;
+  if(!r.schedule) r.schedule = {};
+  const key = id+'-'+day;
+  state.expandedWeeklyEditor = state.expandedWeeklyEditor===key? null : key;
+  render();
+}
+function toggleWeeklyTeamMember(id, day, name){
+  const r = state.route.find(x=>x.id===id);
+  if(!r) return;
+  if(!r.schedule) r.schedule = {};
+  if(!r.schedule[day]) r.schedule[day] = [];
+  const idx = r.schedule[day].indexOf(name);
+  if(idx>=0){ r.schedule[day].splice(idx,1); render(); return; }
+  const conflict = findWeeklyConflict(id, day, name);
+  if(conflict){
+    showToast(`${name} ya está en ${conflict.name} y no le da tiempo a llegar`,'⚠️');
+    return;
+  }
+  r.schedule[day].push(name);
+  render();
+}
+function confirmWeeklyTeam(id, day){
+  const r = state.route.find(x=>x.id===id);
+  if(!r) return;
+  for(const name of ((r.schedule&&r.schedule[day])||[])){
+    const conflict = findWeeklyConflict(id, day, name);
+    if(conflict){ showToast(`No se puede guardar: ${name} coincide con ${conflict.name}`,'⚠️'); return; }
+  }
+  state.expandedWeeklyEditor = null;
+  showToast(`${DAY_LABELS[day]} guardado para ${r.name}`,'✅');
+  if(window.fbWriteRoute) window.fbWriteRoute(r);
+  render();
+}
+screens.weeklyPlan = () => topbar('Planificación semanal', 'Organiza el trabajo de toda la semana por adelantado', 'planner') + `
+  <div class="content">
+    <div class="card" style="background:#E4EBF7;box-shadow:none;">
+      <p style="font-size:12px;color:var(--navy);margin:0;">📅 Marca los días en que cada comunidad tiene servicio y asigna el equipo de ese día. Así podéis prever la carga de trabajo del mes y organizar los descansos del equipo con antelación.</p>
+    </div>
+    ${state.route.filter(r=>r.active!==false).map(r=>`
+      <div class="card">
+        <h3 style="font-size:14px;margin:0 0 2px;">${r.name}</h3>
+        <p style="font-size:12px;color:var(--grey);margin:0 0 8px;">Plan ${r.plan} · 🕐 ${r.time}</p>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          ${DAY_KEYS.map(day=>{
+            const active = r.schedule && r.schedule[day] && r.schedule[day].length;
+            return `<button class="btn-sm ${active?'btn-navy':'btn-outline'}" style="flex:1;min-width:40px;padding:6px 2px;" onclick="toggleWeeklyDay(${r.id},'${day}')">${day.toUpperCase()}</button>`;
+          }).join('')}
+        </div>
+        ${DAY_KEYS.filter(day=>state.expandedWeeklyEditor===r.id+'-'+day).map(day=>`
+          <div class="team-editor">
+            <p style="font-size:12.5px;color:var(--navy);font-weight:700;margin:8px 0 6px;">${DAY_LABELS[day]}</p>
+            ${activeOperarioNames().map(op=>`
+              <label class="disclaimer-check" style="margin-bottom:6px;" onclick="toggleWeeklyTeamMember(${r.id},'${day}','${op}')">
+                <div class="checkbox ${((r.schedule&&r.schedule[day])||[]).includes(op)?'checked':''}">${((r.schedule&&r.schedule[day])||[]).includes(op)?'✓':''}</div>
+                <span>${op}</span>
+              </label>`).join('')}
+            <button class="btn btn-sm" style="width:100%;margin-top:6px;" onclick="confirmWeeklyTeam(${r.id},'${day}')">✅ Guardar ${DAY_LABELS[day]}</button>
+          </div>
+        `).join('')}
+      </div>`).join('')}
+  </div>`;
 
 screens.newClient = () => topbar('Alta de Clientes', null, 'home') + `
   <div class="content">
@@ -3007,10 +3134,17 @@ screens.newClient = () => topbar('Alta de Clientes', null, 'home') + `
     <label class="field-label">Teléfono de contacto</label>
     <input type="tel" id="ncPhone" placeholder="600 000 000">
     <label class="field-label">Administrador de Fincas asignado</label>
-    <select id="ncAdminFincas">
+    <select id="ncAdminFincas" onchange="state.newAdminFincasMode=(this.value==='__nuevo__'); render();">
       <option value="">Sin asignar (revisar antes de activar)</option>
       ${state.employees.filter(e=>e.role==='Administrador de Fincas' && e.status==='activo').map(e=>`<option value="${e.id}">${e.name}</option>`).join('')}
+      <option value="__nuevo__" ${state.newAdminFincasMode?'selected':''}>➕ Nuevo Administrador de Fincas...</option>
     </select>
+    ${state.newAdminFincasMode? `
+      <label class="field-label">Nombre del nuevo Administrador de Fincas</label>
+      <input type="text" id="ncAdminFincasNew" placeholder="Ej: Fincas Levante S.L.">
+      <label class="field-label">Teléfono (opcional)</label>
+      <input type="tel" id="ncAdminFincasNewPhone" placeholder="600 000 000">
+    `:''}
     <label class="field-label">Plan a contratar</label>
     <div class="plan-card plan-basico" onclick="selectPlan('Básico',this)" style="cursor:pointer;">
       <h3 style="color:white;margin:0;">🟢 Básico</h3><p style="font-size:11.5px;margin:4px 0 0;opacity:0.85;">1-2 días/semana · Urgencias &lt;24h</p>
@@ -3036,8 +3170,18 @@ function createClient(){
   if(!name || !selectedPlan){ showToast('Falta el nombre o el plan','⚠️'); return; }
   const vecinoCode = String(Math.floor(1000+Math.random()*9000));
   const presidentCode = String(Math.floor(1000+Math.random()*9000));
-  const administradorFincasId = document.getElementById('ncAdminFincas').value || null;
-  const newStop = {id:Date.now(), name, address: document.getElementById('ncTown').value||'Axarquía', time:'09:00', status:'pendiente', plan:selectedPlan, team:[], active:true, vecinoCode, presidentCode, administradorFincasId, order: state.route.length};
+  let administradorFincasId = document.getElementById('ncAdminFincas').value || null;
+  if(administradorFincasId==='__nuevo__'){
+    const newAdminName = document.getElementById('ncAdminFincasNew').value.trim();
+    if(!newAdminName){ showToast('Escribe el nombre del nuevo Administrador de Fincas','⚠️'); return; }
+    const newAdminPhone = document.getElementById('ncAdminFincasNewPhone').value.trim();
+    const newAdmin = {id:'EMP-'+Math.floor(100+Math.random()*900), name:newAdminName, phone:newAdminPhone, code:String(Math.floor(1000+Math.random()*9000)), role:'Administrador de Fincas', specialty:'Gestión de comunidades', status:'activo', external:true};
+    state.employees.unshift(newAdmin);
+    if(window.fbWriteEmployee) window.fbWriteEmployee(newAdmin);
+    administradorFincasId = newAdmin.id;
+    state.newAdminFincasMode = false;
+  }
+  const newStop = {id:Date.now(), name, address: document.getElementById('ncTown').value||'Axarquía', time:'09:00', status:'pendiente', plan:selectedPlan, team:[], active:true, vecinoCode, presidentCode, administradorFincasId, order: state.route.length, travelMinutes:15};
   state.route.push(newStop);
   if(window.fbWriteRoute) window.fbWriteRoute(newStop);
   showToast(administradorFincasId ? `${name} dada de alta · código vecino: ${vecinoCode} · presidente: ${presidentCode}` : `${name} dada de alta sin Administrador de Fincas asignado`, administradorFincasId?'🎉':'⚠️');
@@ -3071,10 +3215,15 @@ screens.manageCommunities = () => topbar('Gestionar Comunidades', 'Altas, bajas 
         ${state.editingAdminFor===r.id ? `
           <div class="card" style="background:#F7F9FA;box-shadow:none;margin:10px 0 0;padding:10px 12px;">
             <label class="field-label">Administrador de Fincas</label>
-            <select id="adminSelect-${r.id}">
+            <select id="adminSelect-${r.id}" onchange="state.newAdminFincasModeFor=(this.value==='__nuevo__'? ${r.id} : null); render();">
               <option value="">Sin asignar</option>
               ${state.employees.filter(e=>e.role==='Administrador de Fincas' && e.status==='activo').map(e=>`<option value="${e.id}" ${r.administradorFincasId===e.id?'selected':''}>${e.name}</option>`).join('')}
+              <option value="__nuevo__" ${state.newAdminFincasModeFor===r.id?'selected':''}>➕ Nuevo Administrador de Fincas...</option>
             </select>
+            ${state.newAdminFincasModeFor===r.id? `
+              <label class="field-label">Nombre del nuevo Administrador de Fincas</label>
+              <input type="text" id="adminNewName-${r.id}" placeholder="Ej: Fincas Levante S.L.">
+            `:''}
             <button class="btn btn-sm" style="width:100%;" onclick="saveAdminFincasChange(${r.id})">Guardar administrador</button>
           </div>
         ` : ''}
@@ -3117,7 +3266,16 @@ function toggleEditAdmin(id){ state.editingAdminFor = state.editingAdminFor===id
 function saveAdminFincasChange(id){
   const r = state.route.find(x=>x.id===id);
   if(!r) return;
-  const newId = document.getElementById('adminSelect-'+id).value || null;
+  let newId = document.getElementById('adminSelect-'+id).value || null;
+  if(newId==='__nuevo__'){
+    const newName = document.getElementById('adminNewName-'+id).value.trim();
+    if(!newName){ showToast('Escribe el nombre del nuevo Administrador de Fincas','⚠️'); return; }
+    const newAdmin = {id:'EMP-'+Math.floor(100+Math.random()*900), name:newName, phone:'', code:String(Math.floor(1000+Math.random()*9000)), role:'Administrador de Fincas', specialty:'Gestión de comunidades', status:'activo', external:true};
+    state.employees.unshift(newAdmin);
+    if(window.fbWriteEmployee) window.fbWriteEmployee(newAdmin);
+    newId = newAdmin.id;
+    state.newAdminFincasModeFor = null;
+  }
   r.administradorFincasId = newId;
   state.editingAdminFor = null;
   showToast(newId ? `Administrador de Fincas actualizado: ${adminFincasNameById(newId)}` : 'Comunidad sin Administrador de Fincas asignado','🏢');
@@ -3204,6 +3362,7 @@ function toggleEmployeeStatus(id){
   if(!e) return;
   e.status = e.status==='activo' ? 'baja' : 'activo';
   showToast(e.status==='baja'? `${e.name} dado de baja` : `${e.name} reactivado`, e.status==='baja'?'🚫':'↩️');
+  if(window.fbWriteEmployee) window.fbWriteEmployee(e);
   render();
 }
 function askDeleteEmployee(id){ state.confirmDeleteEmployee = id; render(); }
@@ -3213,6 +3372,7 @@ function deleteEmployee(id){
   state.employees = state.employees.filter(x=>x.id!==id);
   state.confirmDeleteEmployee = null;
   showToast(`${e?.name||'Empleado'} eliminado definitivamente`,'🗑️');
+  if(window.fbDeleteEmployee) window.fbDeleteEmployee(id);
   go('employees');
 }
 
@@ -3243,6 +3403,7 @@ function createEmployee(){
   if(!phone){ showToast('Escribe un teléfono de contacto','⚠️'); return; }
   const code = String(Math.floor(1000+Math.random()*9000));
   state.employees.unshift({id:'EMP-'+Math.floor(100+Math.random()*900), name, phone, code, role, specialty, status:'activo', external: role==='Administrador de Fincas'});
+  if(window.fbWriteEmployee) window.fbWriteEmployee(state.employees[0]);
   showToast(`Alta creada · código de acceso: ${code}`, '🔑');
   go('employees');
 }
@@ -3324,6 +3485,43 @@ window.render = render;
     });
   }
   initRouteSync();
+
+  function makeCollectionSync(colName, stateKey){
+    const col = collection(db, colName);
+    const writeFn = async function(item){
+      try{ await setDoc(doc(db, colName, String(item.id)), item, { merge:true }); }
+      catch(err){ console.error(`Error guardando en ${colName}:`, err); }
+    };
+    const deleteFn = async function(id){
+      try{ await deleteDoc(doc(db, colName, String(id))); }
+      catch(err){ console.error(`Error eliminando en ${colName}:`, err); }
+    };
+    (async function init(){
+      try{
+        const snap = await getDocs(col);
+        if(snap.empty && window.state && window.state[stateKey] && window.state[stateKey].length){
+          // Primera vez que se conecta: sube los datos actuales para que dejen de vivir solo en memoria
+          for(const item of window.state[stateKey]){ await setDoc(doc(db, colName, String(item.id)), item); }
+        }
+      }catch(err){ console.error(`Error inicializando ${colName}:`, err); }
+
+      onSnapshot(col, (snapshot) => {
+        if(!window.state) return;
+        const items = [];
+        snapshot.forEach(d => items.push(d.data()));
+        window.state[stateKey] = items;
+        if(window.render) window.render();
+      });
+    })();
+    return { write: writeFn, delete: deleteFn };
+  }
+
+  const employeesSync = makeCollectionSync('employees', 'employees');
+  window.fbWriteEmployee = employeesSync.write;
+  window.fbDeleteEmployee = employeesSync.delete;
+
+  const incidentsSync = makeCollectionSync('incidencias', 'incidents');
+  window.fbWriteIncident = incidentsSync.write;
 
   onAuthStateChanged(auth, async (user) => {
     if(!user){ return; }
